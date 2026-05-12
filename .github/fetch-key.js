@@ -1,0 +1,71 @@
+// .github/scripts/fetch-key.js
+const { fetch } = require('undici');
+
+const TARGET_URL = 'https://peachify.top/embed/movie/1007757';
+const CHUNK_SCRIPT_REGEX = /<script[^>]*src="(\/_next\/static\/chunks\/[a-zA-Z0-9_-]+\.js)"[^>]*>/g;
+const KEY_REGEX = /"([a-f0-9]{64})"/i;
+
+const HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://peachify.top/',
+    'Origin': 'https://peachify.top',
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
+};
+
+async function main() {
+    console.log('[GH-Action] Fetching embed page...');
+    const htmlRes = await fetch(TARGET_URL, { headers: HEADERS });
+    if (!htmlRes.ok) throw new Error(`HTML fetch failed: ${htmlRes.status}`);
+
+    const html = await htmlRes.text();
+    const scriptMatches = [...html.matchAll(CHUNK_SCRIPT_REGEX)];
+
+    if (scriptMatches.length < 7) {
+        throw new Error(`Not enough scripts found. Got ${scriptMatches.length}, need 7.`);
+    }
+
+    const seventhScriptPath = scriptMatches[6][1]; // 7th script (0-indexed)
+    const chunkUrl = 'https://peachify.top' + seventhScriptPath;
+    console.log(`[GH-Action] Fetching JS chunk: ${chunkUrl}`);
+
+    const jsRes = await fetch(chunkUrl, {
+        headers: {
+            ...HEADERS,
+            'Accept': '*/*',
+            'Sec-Fetch-Dest': 'script',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Range': 'bytes=-60000' // Fetch last 60KB to save bandwidth
+        }
+    });
+
+    if (!jsRes.ok) throw new Error(`JS fetch failed: ${jsRes.status}`);
+    let jsText = await jsRes.text();
+
+    // Fallback slice if server ignores Range
+    if (jsText.length > 60000) jsText = jsText.slice(-60000);
+
+    const keyMatch = KEY_REGEX.exec(jsText);
+    if (!keyMatch || !keyMatch[1]) {
+        throw new Error('Decryption key not found in JS chunk.');
+    }
+
+    const key = keyMatch[1].trim();
+    console.log(`[GH-Action] Key found: ${key.slice(0, 8)}...`);
+
+    // Write to file
+    require('fs').writeFileSync('peachify-key.txt', key);
+    console.log('[GH-Action] Key saved to peachify-key.txt');
+}
+
+main().catch(err => {
+    console.error('[GH-Action] FAILED:', err.message);
+    process.exit(1);
+});
